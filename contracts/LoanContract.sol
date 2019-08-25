@@ -45,7 +45,7 @@ contract BLoanContract {
         uint128 duration;
         uint256 createdOn;
         uint256 startedOn;
-        uint256 outstandingAmount;
+        //uint256 outstandingAmount;
         address borrower;
         address lender;
         LoanStatus loanStatus;
@@ -62,6 +62,7 @@ contract BLoanContract {
     }
 
     LoanData loan;
+    LoanStatus prevStatus;
 
     IERC20 public ERC20;
 
@@ -80,8 +81,10 @@ contract BLoanContract {
     event FundTransferToLoanSuccessful(address, uint256);
     event FundTransferToBorrowerSuccessful(address, uint256);
     event LoanRepaid(address, uint256);
+    event LoanStarted(uint256); 
     event CollateralTransferReturnedToBorrower(address, uint256);
     event CollateralClaimedByLender(address, uint256);
+    event CollateralSentToLenderForDefaultedRepayment(uint256, address, uint256);
 
     modifier OnlyBorrower {
         require(msg.sender == loan.borrower, "Not Authorised");
@@ -122,6 +125,8 @@ contract BLoanContract {
     function transferCollateralToLoan() public OnlyBorrower {
 
         ERC20 = IERC20(loan.collateral.collateralAddress);
+        prevStatus = loan.loanStatus;
+        
 
         if(loan.collateral.collateralAmount > ERC20.allowance(msg.sender, address(this))) {
             emit CollateralTransferToLoanFailed(msg.sender, loan.collateral.collateralAmount);
@@ -135,18 +140,23 @@ contract BLoanContract {
         emit CollateralTransferToLoanSuccessful(msg.sender, loan.collateral.collateralAmount);
         
         // contract will also be transferring funds to borrower (only in case of loan offer)
-        //address(uint160(loan.borrower)).transfer(loan.loanAmount);
-        //emit FundTransferToBorrowerSuccessful(loan.borrower, loan.loanAmount);
+        if(prevStatus == LoanStatus.FUNDED)
+        {
+        address(uint160(loan.borrower)).transfer(loan.loanAmount);
+        emit FundTransferToBorrowerSuccessful(loan.borrower, loan.loanAmount);
+        loan.startedOn = now;
+        emit LoanStarted(loan.startedOn);
+        // We monitor this event and block time it was fired. every duration interval apart, we call function to make a call for potentially failed repayments
+        }
     }
 
-    function acceptLoanOffer() {
+    function acceptLoanOffer(uint256 _interestRate, address _collateralAddress, uint256 _collateralAmount, uint256 _collateralPriceInETH, uint256 _ltv) {
 
         require(loan.loanStatus == LoanStatus.FUNDED, "Incorrect loan status");
         loan.borrower = msg.sender;
-        loan.loanStatus = LoanStatus.ACTIVE;
         /* This will call setters and enrich loan data */
-        
-        // borrower should transfer collateral after this. use same above method?
+        this.enrichLoan(_interestRate,_collateralAddress,_collateralAmount, _collateralPriceInETH,_ltv);
+        // borrower should transfer collateral after this. use same above method? YES   
     }
     
    function approveLoanRequest() public payable {
@@ -159,6 +169,7 @@ contract BLoanContract {
 
         emit FundTransferToLoanSuccessful(msg.sender, msg.value);
         loan.startedOn = now;
+        emit LoanStarted(loan.startedOn);
 
         address(uint160(loan.borrower)).transfer(loan.loanAmount);
         emit FundTransferToBorrowerSuccessful(loan.borrower, loan.loanAmount);
@@ -189,7 +200,7 @@ contract BLoanContract {
       return LoanMath.getRepaymentNumber(loan.startedOn, loan.duration);
     }
 
-    function getRepaymentAmount(uint256 repaymentNumber) view public returns(uint256 amount, uint256 monthlyInterest, uint256 fees){
+    function getRepaymentAmount(uint256 repaymentNumber) view public returns(uint256 amount, uint256 monthlyInterest, uint256 fees) {
 
         uint256 totalLoanRepayments = LoanMath.getTotalNumberOfRepayments(loan.duration);
 
@@ -206,12 +217,34 @@ contract BLoanContract {
     }
     
     // this func to be called when any repayment due date is passed
-    
     function makeFailedRepayments() {
-    // checks if not added in paid repayments 
-    // initates transfer according to repayment amount and current value of collateral
+    // UI checks if anytime now > due date of repayment n
+    uint256 totalLoanRepayments = LoanMath.getTotalNumberOfRepayments(loan.duration);
+   
+    uint256 repaymentNumber;
+    if(LoanMath.getRepaymentNumber(loan.startedOn, loan.duration).sub(1) > 0) {
+        repaymentNumber = LoanMath.getRepaymentNumber(loan.startedOn, loan.duration).sub(1);
     }
+    else { 
+        repaymentNumber = totalLoanRepayments;
+        
+    }
+    
+     // cheks if repayment n was added in paid repayments array
+    bool wasPaid = loan.repayments[repaymentNumber]; // update formulae
+    if(!wasPaid)
+    {
+        // initates transfer according to repayment amount and current value of collateral1
+        (uint256 _repayAmount,,uint256 fees) = getRepaymentAmount(repaymentNumber);
+         uint256 collateralAmountToTrasnfer = LoanMath.calculateCollateralAmountToDeduct((_repayAmount.sub(fees)).mul(1.05), loan.collateral.collateralPrice);   
+         ERC20 = IERC20(loan.collateral.collateralAddress);
+         ERC20.transfer(loan.lender, collateralAmountToTransfer);
+         emit CollateralSentToLenderForDefaultedRepayment(repaymentNumber,loan.lender,collateralAmountToTransfer);
+    }
+  }
 
+    /// assuming repayment is done before due date
+    /// will pick active repayment number 
     function repayLoan() public payable {
 
         require(now <= loan.startedOn + loan.duration * 1 minutes, "Loan Duration Expired");
@@ -227,21 +260,27 @@ contract BLoanContract {
         }
         uint256 toTransfer = amount.sub(fees);
 
-        loan.outstandingAmount = loan.outstandingAmount.sub(msg.value);
+       //loan.outstandingAmount = loan.outstandingAmount.sub(msg.value);
 
-        if(loan.outstandingAmount <= 0)
-            loan.loanStatus = LoanStatus.REPAID;
+       // if(loan.outstandingAmount <= 0)
+    //       loan.loanStatus = LoanStatus.REPAID;
 
         repayments.push(repaymentNumber);
 
         address(uint160(loan.lender)).transfer(toTransfer);
 
+        // should log particular repaymentNumber paid instead
         emit LoanRepaid(msg.sender, amount);
     }
 
     function transferToWallet1(uint256 fees) private {
         address(uint160(WALLET_1)).transfer(fees);
     }
+    
+    function transferCollateralToWallet1 (uint256 fees) private {
+        
+    }
+    
 
     function returnCollateralToBorrower() public OnlyBorrower {
 
@@ -262,7 +301,7 @@ contract BLoanContract {
 
     }
 
-    function claimCollateralByLender() public OnlyLender {
+  /*  function claimCollateralByLender() public OnlyLender {
 
         require(now > loan.startedOn + loan.duration * 1 minutes, "Loan Still Active");
         require(loan.loanStatus != LoanStatus.DEFAULT, "Collateral Claimed Already");
@@ -282,6 +321,6 @@ contract BLoanContract {
 
             emit CollateralClaimedByLender(msg.sender, collateralAmountToTransfer);
         }
-    }
+    } */
 
 }
