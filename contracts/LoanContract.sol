@@ -2,9 +2,9 @@ pragma solidity ^0.5.0;
 
 import "openzeppelin-solidity/contracts/token/ERC20/IERC20.sol";
 import "openzeppelin-solidity/contracts/math/SafeMath.sol";
-import "./libs/LoanMath.sol";
+import "./LoanMath.sol";
 
-contract BLoanContract {
+contract LoanContract {
 
     using SafeMath for uint256;
 
@@ -45,14 +45,14 @@ contract BLoanContract {
         uint128 duration;
         uint256 createdOn;
         uint256 startedOn;
-        //uint256 outstandingAmount;
+       // uint256 outstandingAmount;
         address borrower;
         address lender;
         LoanStatus loanStatus;
         CollateralData collateral; // will be updated on accepance in case of loan offer
     }
-    
-    function enrichLoan(uint256 _interestRate, address _collateralAddress, uint256 _collateralAmount, uint256 _collateralPriceInETH, uint256 _ltv) {
+
+    function enrichLoan(uint256 _interestRate, address _collateralAddress, uint256 _collateralAmount, uint256 _collateralPriceInETH, uint256 _ltv) public {
         loan.interestRate = _interestRate;
         loan.collateral.collateralAddress = _collateralAddress;
         loan.collateral.collateralPrice = _collateralPriceInETH;
@@ -62,7 +62,6 @@ contract BLoanContract {
     }
 
     LoanData loan;
-    LoanStatus prevStatus;
 
     IERC20 public ERC20;
 
@@ -84,7 +83,6 @@ contract BLoanContract {
     event LoanStarted(uint256); 
     event CollateralTransferReturnedToBorrower(address, uint256);
     event CollateralClaimedByLender(address, uint256);
-    event CollateralSentToLenderForDefaultedRepayment(uint256, address, uint256);
 
     modifier OnlyBorrower {
         require(msg.sender == loan.borrower, "Not Authorised");
@@ -96,7 +94,7 @@ contract BLoanContract {
         _;
     }
 
-    constructor(uint256 _loanAmount, uint128 _duration, string _acceptedCollateralsMetadata, 
+    constructor(uint256 _loanAmount, uint128 _duration, string memory _acceptedCollateralsMetadata,
         uint256 _interestRate, address _collateralAddress,
         uint256 _collateralAmount, uint256 _collateralPriceInETH, uint256 _ltv, address _borrower, address _lender, LoanStatus _loanstatus) public {
         loan.loanAmount = _loanAmount;
@@ -112,7 +110,7 @@ contract BLoanContract {
         loan.collateral = CollateralData(_collateralAddress, _collateralAmount, _collateralPriceInETH, _ltv, CollateralStatus.WAITING);
         // later this will be filled when borrower accepts the loan
     }
-    
+
     // after loan offer created
     function transferFundsToLoan() public payable OnlyLender {
          require(msg.value >= loan.loanAmount, "Sufficient funds not transferred");
@@ -125,22 +123,21 @@ contract BLoanContract {
     function transferCollateralToLoan() public OnlyBorrower {
 
         ERC20 = IERC20(loan.collateral.collateralAddress);
-        prevStatus = loan.loanStatus;
+        LoanStatus prevStatus = loan.loanStatus;
         
-
         if(loan.collateral.collateralAmount > ERC20.allowance(msg.sender, address(this))) {
             emit CollateralTransferToLoanFailed(msg.sender, loan.collateral.collateralAmount);
             revert();
         }
-        
+
         loan.collateral.collateralStatus = CollateralStatus.ARRIVED;
         loan.loanStatus = LoanStatus.ACTIVE;
         ERC20.transferFrom(msg.sender, address(this), loan.collateral.collateralAmount);
 
         emit CollateralTransferToLoanSuccessful(msg.sender, loan.collateral.collateralAmount);
-        
+
         // contract will also be transferring funds to borrower (only in case of loan offer)
-        if(prevStatus == LoanStatus.FUNDED)
+         if(prevStatus == LoanStatus.FUNDED)
         {
         address(uint160(loan.borrower)).transfer(loan.loanAmount);
         emit FundTransferToBorrowerSuccessful(loan.borrower, loan.loanAmount);
@@ -150,15 +147,17 @@ contract BLoanContract {
         }
     }
 
-    function acceptLoanOffer(uint256 _interestRate, address _collateralAddress, uint256 _collateralAmount, uint256 _collateralPriceInETH, uint256 _ltv) {
+    function acceptLoanOffer() public {
 
         require(loan.loanStatus == LoanStatus.FUNDED, "Incorrect loan status");
         loan.borrower = msg.sender;
         /* This will call setters and enrich loan data */
         this.enrichLoan(_interestRate,_collateralAddress,_collateralAmount, _collateralPriceInETH,_ltv);
-        // borrower should transfer collateral after this. use same above method? YES   
+
+        // borrower should transfer collateral after this. use same above method? YES (validation done)
+        // to be done in UI
     }
-    
+
    function approveLoanRequest() public payable {
 
         require(msg.value >= loan.loanAmount, "Sufficient funds not transferred");
@@ -166,18 +165,19 @@ contract BLoanContract {
 
         loan.lender = msg.sender;
         loan.loanStatus = LoanStatus.FUNDED;
+        emit LoanStarted(loan.startedOn); 
+        // We monitor this event and block time it was fired. every duration interval apart, we call function to make a call for potentially failed repayments
 
         emit FundTransferToLoanSuccessful(msg.sender, msg.value);
         loan.startedOn = now;
-        emit LoanStarted(loan.startedOn);
 
         address(uint160(loan.borrower)).transfer(loan.loanAmount);
         emit FundTransferToBorrowerSuccessful(loan.borrower, loan.loanAmount);
     }
-    
+
 
     function getLoanData() view public returns (
-        uint256 _loanAmount, uint128 _duration, uint256 _interest, string _acceptedCollateralsMetadata, uint256 startedOn, LoanStatus _loanStatus,
+        uint256 _loanAmount, uint128 _duration, uint256 _interest, string memory _acceptedCollateralsMetadata, uint256 startedOn, LoanStatus _loanStatus,
         address _collateralAddress, uint256 _collateralAmount, uint256 _collateralPrice, uint256 _ltv, CollateralStatus _collateralStatus,
         uint256 _remainingCollateralAmount,
         address _borrower, address _lender) {
@@ -200,7 +200,7 @@ contract BLoanContract {
       return LoanMath.getRepaymentNumber(loan.startedOn, loan.duration);
     }
 
-    function getRepaymentAmount(uint256 repaymentNumber) view public returns(uint256 amount, uint256 monthlyInterest, uint256 fees) {
+    function getRepaymentAmount(uint256 repaymentNumber) view public returns(uint256 amount, uint256 monthlyInterest, uint256 fees){
 
         uint256 totalLoanRepayments = LoanMath.getTotalNumberOfRepayments(loan.duration);
 
@@ -215,7 +215,7 @@ contract BLoanContract {
 
         return (amount, monthlyInterest, fees);
     }
-    
+
     // this func to be called when any repayment due date is passed
     function makeFailedRepayments() {
     // UI checks if anytime now > due date of repayment n
@@ -242,9 +242,8 @@ contract BLoanContract {
          emit CollateralSentToLenderForDefaultedRepayment(repaymentNumber,loan.lender,collateralAmountToTransfer);
     }
   }
-
-    /// assuming repayment is done before due date
-    /// will pick active repayment number 
+  
+  
     function repayLoan() public payable {
 
         require(now <= loan.startedOn + loan.duration * 1 minutes, "Loan Duration Expired");
@@ -260,16 +259,16 @@ contract BLoanContract {
         }
         uint256 toTransfer = amount.sub(fees);
 
-       //loan.outstandingAmount = loan.outstandingAmount.sub(msg.value);
+      //  loan.outstandingAmount = loan.outstandingAmount.sub(msg.value);
 
-       // if(loan.outstandingAmount <= 0)
-    //       loan.loanStatus = LoanStatus.REPAID;
+      //  if(loan.outstandingAmount <= 0)
+      //      loan.loanStatus = LoanStatus.REPAID;
 
         repayments.push(repaymentNumber);
 
         address(uint160(loan.lender)).transfer(toTransfer);
 
-        // should log particular repaymentNumber paid instead
+       // should log particular repaymentNumber paid instead
         emit LoanRepaid(msg.sender, amount);
     }
 
@@ -278,17 +277,20 @@ contract BLoanContract {
     }
     
     function transferCollateralToWallet1 (uint256 fees) private {
-        
+        uint256 feesInCollateralAmount = LoanMath.calculateCollateralAmountToDeduct(fees, loan.collateral.collateralPrice);
+        ERC20 = IERC20(loan.collateral.collateralAddress);
+        ERC20.transfer(WALLET_1, feesInCollateralAmount));
     }
     
 
-    function returnCollateralToBorrower() public OnlyBorrower {
+  /// I will update this one after take on outstanding amount and discussion with lloyd 
+ /*   function returnCollateralToBorrower() public OnlyBorrower {
 
         require(now > loan.startedOn + loan.duration * 1 minutes, "Loan Still Active");
         require(loan.collateral.collateralStatus != CollateralStatus.RETURNED, "Collateral Already Returned");
 
         ERC20 = IERC20(loan.collateral.collateralAddress);
-
+    /// I will update this one after take on outstanding amount and discussion with lloyd 
         uint256 collateralAmountToDeduct = LoanMath.calculateCollateralAmountToDeduct(loan.outstandingAmount, loan.collateral.collateralPrice);
 
         loan.collateral.collateralStatus = CollateralStatus.RETURNED;
@@ -298,10 +300,10 @@ contract BLoanContract {
         ERC20.transfer(msg.sender, loan.collateral.collateralAmount.sub(collateralAmountToDeduct));
 
         emit CollateralTransferReturnedToBorrower(msg.sender, loan.collateral.collateralAmount.sub(collateralAmountToDeduct));
+  /// I will update this one after take on outstanding amount and discussion with lloyd 
+    } */
 
-    }
-
-  /*  function claimCollateralByLender() public OnlyLender {
+/*    function claimCollateralByLender() public OnlyLender {
 
         require(now > loan.startedOn + loan.duration * 1 minutes, "Loan Still Active");
         require(loan.loanStatus != LoanStatus.DEFAULT, "Collateral Claimed Already");
@@ -309,7 +311,7 @@ contract BLoanContract {
         if(loan.outstandingAmount > 0) {
 
             uint256 collateralAmountToTransfer = LoanMath.calculateCollateralAmountToDeduct(loan.outstandingAmount, loan.collateral.collateralPrice);
-            // at any of this point price has to be fed by oracle 
+            // at any of this point price has to be fed by oracle
 
             remainingCollateralAmount = remainingCollateralAmount.sub(collateralAmountToTransfer);
 
