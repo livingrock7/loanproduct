@@ -52,15 +52,6 @@ contract LoanContract {
         CollateralData collateral; // will be updated on accepance in case of loan offer
     }
 
-    function enrichLoan(uint256 _interestRate, address _collateralAddress, uint256 _collateralAmount, uint256 _collateralPriceInETH, uint256 _ltv) public {
-        loan.interestRate = _interestRate;
-        loan.collateral.collateralAddress = _collateralAddress;
-        loan.collateral.collateralPrice = _collateralPriceInETH;
-        loan.collateral.collateralAmount = _collateralAmount;
-        loan.collateral.collateralStatus = CollateralStatus.WAITING;
-        loan.collateral.ltv = _ltv;
-    }
-
     LoanData loan;
 
     IERC20 public ERC20;
@@ -110,6 +101,16 @@ contract LoanContract {
         loan.collateral = CollateralData(_collateralAddress, _collateralAmount, _collateralPriceInETH, _ltv, CollateralStatus.WAITING);
         // later this will be filled when borrower accepts the loan
     }
+    
+     function enrichLoan(uint256 _interestRate, address _collateralAddress, uint256 _collateralAmount, uint256 _collateralPriceInETH, uint256 _ltv) public {
+        loan.interestRate = _interestRate;
+        loan.collateral.collateralAddress = _collateralAddress;
+        loan.collateral.collateralPrice = _collateralPriceInETH;
+        loan.collateral.collateralAmount = _collateralAmount;
+        loan.collateral.collateralStatus = CollateralStatus.WAITING;
+        loan.collateral.ltv = _ltv;
+    }
+
 
     // after loan offer created
     function transferFundsToLoan() public payable OnlyLender {
@@ -147,12 +148,12 @@ contract LoanContract {
         }
     }
 
-    function acceptLoanOffer() public {
+    function acceptLoanOffer(uint256 _interestRate, address _collateralAddress, uint256 _collateralAmount, uint256 _collateralPriceInETH, uint256 _ltv) public {
 
         require(loan.loanStatus == LoanStatus.FUNDED, "Incorrect loan status");
         loan.borrower = msg.sender;
         /* This will call setters and enrich loan data */
-        this.enrichLoan(_interestRate,_collateralAddress,_collateralAmount, _collateralPriceInETH,_ltv);
+        enrichLoan(_interestRate,_collateralAddress,_collateralAmount, _collateralPriceInETH,_ltv);
 
         // borrower should transfer collateral after this. use same above method? YES (validation done)
         // to be done in UI
